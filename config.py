@@ -1,4 +1,3 @@
-# config.py
 from db import getConn
 
 DEFAULT_CONFIG = {

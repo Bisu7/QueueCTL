@@ -93,13 +93,13 @@ def jobProcess(job_row, worker_id):
                 """, (now, json.dumps(result), job_id))
             else:
                 delay = baseBackoff ** attempts
-                next_run_time = (datetime.utcnow() + timedelta(seconds=delay)).isoformat()
+                nextRunTime = (datetime.utcnow() + timedelta(seconds=delay)).isoformat()
                 print(f"[{worker_id}] is Retrying job {job_id} after {delay}s (Attempt {attempts}/{maxRetries})")
                 cur.execute("""
                     UPDATE jobs
                     SET state='pending', next_run_at=?, updated_at=?, locked_by=NULL, output_log=?
                     WHERE id=?
-                """, (next_run_time, now, json.dumps(result), job_id))
+                """, (nextRunTime, now, json.dumps(result), job_id))
 
         conn.commit()
 

@@ -21,7 +21,7 @@ def getConn():
         finally:
             conn.close()
 
-def init_DB():
+def init_db():
     with getConn() as conn:
         cur = conn.cursor()
         cur.execute("""

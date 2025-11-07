@@ -1,16 +1,17 @@
 import click
-from enqueue import enqueue_job
+from enqueue import enqueueJobs
 from worker import start_workers  
 from db import init_db
+from datetime import datetime
 
 @click.group()
 def cli():
     init_db()
 
 @cli.command()
-@click.argument('job_json')
-def enqueue(job_json):
-    enqueue_job(job_json)
+@click.argument("job_str")
+def enqueue(job_str):
+    enqueueJobs(job_str)
     click.echo("Enqueued")
 
 @cli.group()
@@ -24,7 +25,20 @@ def start(count):
 
 @cli.command()
 def status():
-    pass
+    """Show job queue status"""
+    from db import getConn
+    with getConn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT state, COUNT(*) FROM jobs GROUP BY state")
+        rows = cur.fetchall()
+
+    click.echo(f"\n🕒 Status checked at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    click.echo("📊 Job Summary:")
+    if rows:
+        for state, count in rows:
+            click.echo(f"  {state.capitalize():<12}: {count}")
+    else:
+        click.echo("  No jobs found.")
 
 if __name__ == '__main__':
     cli()
