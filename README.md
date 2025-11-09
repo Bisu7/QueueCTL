@@ -76,64 +76,75 @@ git clone https://github.com/Bisu7/QueueCTL.git
 cd QueueCTL
 pip install -r requirements.txt
 ```
-
-
 ---
 
 
+## 💻 Usage Examples
 
-##💻 Usage Examples
 1️⃣ Initialize Database
-python queuectl.py init-db
+
+```python queuectl.py init-db```
 
 2️⃣ Enqueue a Job
-python queuectl.py enqueue '{"id":"job1","command":"echo Hello World"}'
+
+```python queuectl.py enqueue '{"id":"job1","command":"echo Hello World"}'```
 
 3️⃣ Start a Worker
-python queuectl.py worker start --count 2
+
+```python queuectl.py worker start --count 2```
 
 4️⃣ Stop Workers
-python queuectl.py worker stop
+
+```python queuectl.py worker stop```
 
 5️⃣ Check Status
-python queuectl.py status
+
+```python queuectl.py status```
 
 6️⃣ List Jobs by State
-python queuectl.py list --state pending
+
+```python queuectl.py list --state pending```
 
 7️⃣ DLQ Operations
+```
 python queuectl.py dlq list
 python queuectl.py dlq retry job1
+```
 
 8️⃣ Change Configuration
+```
 python queuectl.py config set max_retries 5
 python queuectl.py config set backoff_base 3
+```
 
-🌈 Bonus Features
+## 🌈 Bonus Features
+
 🕓 Job Timeout Handling
 
 Automatically fails jobs exceeding job_timeout (configurable in queuectl_config.json).
 
 🚦 Priority Queues
 
-Add "priority": <int> in enqueue JSON:
+Add ```"priority": <int>``` in enqueue JSON:
 
-python queuectl.py enqueue '{"id":"job_high","command":"echo High","priority":5}'
+```python queuectl.py enqueue '{"id":"job_high","command":"echo High","priority":5}'```
 
 ⏰ Scheduled / Delayed Jobs
 
 Schedule job for later:
 
-python queuectl.py enqueue '{"id":"job_future","command":"echo Future Job","run_at":"10"}'
+```python queuectl.py enqueue '{"id":"job_future","command":"echo Future Job","run_at":"10"}'```
 
 🧾 Job Output Logging
 
 Check logs at:
-
+```
 logs/<job_id>.log
+```
 
 📊 Metrics
 
 View collected metrics:
-
+```
 type metrics.json
+```
