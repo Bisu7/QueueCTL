@@ -148,3 +148,20 @@ View collected metrics:
 ```
 type metrics.json
 ```
+---
+
+## 🧠 **Architecture Overview**
+
+### 📦 Job Lifecycle
+| **State** | **Description** |
+|------------|----------------|
+| `pending` | Waiting for worker |
+| `processing` | Currently being executed |
+| `completed` | Finished successfully |
+| `failed` | Failed but retryable |
+| `dead` | Permanently failed (moved to DLQ) |
+
+### 🔁 Retry Logic
+Exponential backoff is used to determine retry delay:
+```text
+delay = base ^ attempts
