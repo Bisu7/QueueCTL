@@ -75,9 +75,14 @@ QueueCTL/
 git clone https://github.com/Bisu7/QueueCTL.git
 cd QueueCTL
 pip install -r requirements.txt
+```
+
+
 ---
 
-💻 Usage Examples
+
+
+##💻 Usage Examples
 1️⃣ Initialize Database
 python queuectl.py init-db
 
