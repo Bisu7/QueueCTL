@@ -1,2 +1,7 @@
 queue.db
-__pycache__
+
+__pycache__/
+
+logs/
+
+workers.stop

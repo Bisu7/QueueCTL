@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "timestamp": "2025-11-09 17:04:52",
+      "event": "start",
+      "job_id": "job_ok",
+      "status": null
+    },
+    {
+      "timestamp": "2025-11-09 17:04:52",
+      "event": "complete",
+      "job_id": "job_ok",
+      "status": "success"
+    },
+    {
+      "timestamp": "2025-11-09 17:04:52",
+      "event": "start",
+      "job_id": "job_fail",
+      "status": null
+    },
+    {
+      "timestamp": "2025-11-09 17:04:52",
+      "event": "complete",
+      "job_id": "job_fail",
+      "status": "failed"
+    }
+  ]
+}
