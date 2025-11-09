@@ -150,6 +150,23 @@ type metrics.json
 ```
 ---
 
+## 🌐 Web Dashboard
+
+Start dashboard:
+```
+python web_dashboard.py
+```
+
+Visit http://localhost:5000
+
+You’ll see:
+
+- Job counts by state
+- Recent jobs table
+- Auto-refresh
+- Filter by state
+- Color-coded statuses
+
 ## 🧠 **Architecture Overview**
 
 ### 📦 Job Lifecycle
@@ -165,3 +182,52 @@ type metrics.json
 Exponential backoff is used to determine retry delay:
 ```text
 delay = base ^ attempts
+```
+
+## 🧵 Worker Logic
+
+- Fetch pending jobs (highest priority first)
+- Execute via subprocess
+- Handle timeout
+- Retry failed jobs
+- Move unrecoverable ones to DLQ
+- Log output and update metrics
+
+## 🧪 Testing Commands
+
+| **Scenario** | **Command** |
+|---------------|-------------|
+| 🟢 **Enqueue success** | `python queuectl.py enqueue '{"id":"ok","command":"echo OK"}'` |
+| 🔴 **Enqueue fail** | `python queuectl.py enqueue '{"id":"fail","command":"exit 1","max_retries":2}'` |
+| ⚙️ **Run worker** | `python queuectl.py worker start` |
+| ☠️ **List DLQ** | `python queuectl.py dlq list` |
+| 🔁 **Retry DLQ job** | `python queuectl.py dlq retry fail` |
+| 🌐 **Start dashboard** | `python web_dashboard.py` |
+
+## 🧰 Configuration
+
+All configurations are stored in `queuectl_config.json.`
+
+Example:
+```
+{
+  "max_retries": 3,
+  "backoff_base": 2,
+  "worker_poll_interval": 1.0,
+  "job_timeout": 60
+}
+```
+Change any parameter via CLI:
+```
+python queuectl.py config set job_timeout 30
+```
+
+## 🧾 Sample Output
+```
+[worker-1] picked job job1 -> echo Hello World
+[worker-1] completed job1
+[worker-1] picked job jobfail -> exit 1
+[worker-1] job jobfail failed rc=1:
+[worker-1] sleeping backoff 2s for job jobfail before next retry
+[worker-1] moved jobfail to DLQ
+```
