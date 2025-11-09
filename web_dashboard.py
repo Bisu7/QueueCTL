@@ -117,5 +117,5 @@ def api_jobs():
 
 
 if __name__ == "__main__":
-    print("🚀 Starting QueueCTL Dashboard at http://localhost:5000")
+    print("Starting QueueCTL Dashboard at http://localhost:5000")
     app.run(port=5000, debug=False)
