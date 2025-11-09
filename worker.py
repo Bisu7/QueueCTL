@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timezone
 from config import Config
 from storage import JobStorage
+from metrics import record
 
 STOP_FLAG = os.path.join(os.path.dirname(__file__), "workers.stop")
 
