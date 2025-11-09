@@ -23,6 +23,18 @@
       "event": "complete",
       "job_id": "job_fail",
       "status": "failed"
+    },
+    {
+      "timestamp": "2025-11-09 17:51:11",
+      "event": "start",
+      "job_id": "job_fail",
+      "status": null
+    },
+    {
+      "timestamp": "2025-11-09 17:51:11",
+      "event": "complete",
+      "job_id": "job_fail",
+      "status": "failed"
     }
   ]
 }

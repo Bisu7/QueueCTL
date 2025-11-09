@@ -1,7 +1,7 @@
-queue.db
+/queue.db
 
 __pycache__/
 
 logs/
 
-workers.stop
+/workers.stop

@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from config import Config
 from storage import JobStorage
-from metrics import record  # ✅ Metrics import
+from metrics import record  
 
 STOP_FLAG = os.path.join(os.path.dirname(__file__), "workers.stop")
 
@@ -40,69 +40,35 @@ class Worker(threading.Thread):
             cmd = job.get("command")
             print(f"[worker-{self.wid}] picked job {job_id} -> {cmd}")
 
-            # ✅ Record job start event
-            record("start", job_id=job_id)
-
-            start_ts = datetime.now(timezone.utc).isoformat()
             try:
-                timeout = self.cfg.get("job_timeout")
-                try:
-                    r = subprocess.run(
-                        cmd,
-                        shell=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        timeout=timeout
-                    )
-
-                    # decode and log job output
-                    out = r.stdout.decode('utf-8', errors='replace')
-                    err = r.stderr.decode('utf-8', errors='replace')
-                    self._log_output(job_id, out, err)
-
-                except subprocess.TimeoutExpired:
-                    print(f"[worker-{self.wid}] job {job_id} timed out after {timeout}s")
-                    attempts, maxr = self.storage.increment_attempts_and_backoff(job_id)
-                    if attempts >= maxr:
-                        self.storage.move_to_dead(job_id, last_error="timeout")
-                        print(f"[worker-{self.wid}] moved {job_id} to DLQ (timeout)")
-
-                        # ✅ Record DLQ move due to timeout
-                        record("complete", job_id=job_id, status="timeout")
-
-                    continue
-
+                r = subprocess.run(
+                    cmd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=self.cfg.get("job_timeout"),
+                )
                 if r.returncode == 0:
                     self.storage.update_job_completion(job_id, "completed", attempts=job.get("attempts", 0))
                     print(f"[worker-{self.wid}] completed {job_id}")
-
-                    # ✅ Record successful completion
-                    record("complete", job_id=job_id, status="success")
-
                 else:
-                    err = r.stderr.decode('utf-8', errors='replace') or r.stdout.decode('utf-8', errors='replace')
+                    err = (
+                        r.stderr.decode("utf-8", errors="replace")
+                        or r.stdout.decode("utf-8", errors="replace")
+                    )
                     print(f"[worker-{self.wid}] job {job_id} failed rc={r.returncode}: {err.strip()}")
-
-                    # ✅ Record failure event
-                    record("complete", job_id=job_id, status="failed")
 
                     attempts, maxr = self.storage.increment_attempts_and_backoff(job_id)
                     if attempts >= maxr:
                         self.storage.move_to_dead(job_id, last_error=err[:1000])
                         print(f"[worker-{self.wid}] moved {job_id} to DLQ")
-
-                        # ✅ Record DLQ move
-                        record("complete", job_id=job_id, status="dead")
                     else:
                         backoff = (self.cfg.get("backoff_base", 2) ** attempts)
-                        print(f"[worker-{self.wid}] sleeping backoff {backoff}s for job {job_id} before next retry")
-                        slept = 0
-                        while slept < backoff:
-                            if self._should_stop():
-                                print(f"[worker-{self.wid}] stop requested during backoff; exiting gracefully.")
-                                return
-                            time.sleep(0.5)
-                            slept += 0.5
+                        print(f"[worker-{self.wid}] sleeping backoff {backoff}s for job {job_id}")
+                        time.sleep(backoff)
+
+                        # ✅ Set job back to pending after backoff so it can retry
+                        self.storage.update_job_completion(job_id, "pending", attempts=attempts)
 
             except subprocess.TimeoutExpired:
                 print(f"[worker-{self.wid}] job {job_id} timed out")
@@ -110,14 +76,22 @@ class Worker(threading.Thread):
                 if attempts >= maxr:
                     self.storage.move_to_dead(job_id, last_error="timeout")
                     print(f"[worker-{self.wid}] moved {job_id} to DLQ (timeout)")
-                    record("complete", job_id=job_id, status="timeout")
+                else:
+                    backoff = (self.cfg.get("backoff_base", 2) ** attempts)
+                    print(f"[worker-{self.wid}] retrying {job_id} after timeout, backoff {backoff}s")
+                    time.sleep(backoff)
+                    self.storage.update_job_completion(job_id, "pending", attempts=attempts)
 
             except Exception as e:
                 print(f"[worker-{self.wid}] exception running job {job_id}: {e}")
                 attempts, maxr = self.storage.increment_attempts_and_backoff(job_id)
                 if attempts >= maxr:
                     self.storage.move_to_dead(job_id, last_error=str(e))
-                    record("complete", job_id=job_id, status="error")
+                    print(f"[worker-{self.wid}] moved {job_id} to DLQ due to exception")
+                else:
+                    backoff = (self.cfg.get("backoff_base", 2) ** attempts)
+                    time.sleep(backoff)
+                    self.storage.update_job_completion(job_id, "pending", attempts=attempts)
 
     def _should_stop(self):
         return os.path.exists(STOP_FLAG)
