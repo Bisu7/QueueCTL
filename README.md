@@ -40,7 +40,9 @@ Built fully in Python and designed to work perfectly on **Windows (PowerShell)**
 
 ## 📁 **Project Structure**
 QueueCTL/
+
 ├─ queuectl.py # CLI entry point
+
 ├─ storage.py # SQLite job persistence
 ├─ worker.py # Worker management
 ├─ dlq.py # Dead Letter Queue logic
