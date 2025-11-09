@@ -1,0 +1,6 @@
+{
+  "max_retries": 5,
+  "backoff_base": 2,
+  "worker_poll_interval": 1.0,
+  "job_timeout": 60
+}

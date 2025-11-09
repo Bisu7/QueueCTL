@@ -1,325 +1,230 @@
-import click
-import subprocess
-import time
+import argparse
 import json
 import os
+import re
 import sys
-
+import time
 from datetime import datetime, timezone
-from typing import Optional
 
-from database import Job, initialize_db, get_session
-from worker import start_workers, stop_workers
+from storage import JobStorage
+from worker import WorkerManager
 from config import Config
-from cli_utils import (
-    STATE_EMOJIS,
-    print_job_table,
-    get_job_summary,
-    check_workers_active,
-    get_worker_pids,
-    get_log_dir
-)
 
-# --- CLI Group ---
+DB_PATH = os.path.join(os.path.dirname(__file__), "queue.db")
+STOP_FLAG = os.path.join(os.path.dirname(__file__), "workers.stop")
 
-@click.group()
-def cli():
+
+def iso_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def smart_parse_job(raw: str) -> dict:
     """
-    queuectl: A CLI-based background job queue system.
-
-    Manages background jobs with worker processes, exponential backoff retries,
-    and a Dead Letter Queue (DLQ).
+    Parse job input string. Works with PowerShell-style single-quoted JSON.
+    Falls back to regex extraction if strict JSON fails.
     """
-    initialize_db()
-    pass
+    raw = raw.strip()
 
-# --- ENQUEUE Command ---
-
-@cli.command()
-@click.argument('job_data', type=str)
-def enqueue(job_data: str):
-    """
-    Add a new job to the queue.
-
-    JOB_DATA must be a JSON string containing at least 'command'.
-    Example: '{"command": "sleep 2 && echo success", "max_retries": 5}'
-    """
+    # First try normal JSON
     try:
-        data = json.loads(job_data)
-    except json.JSONDecodeError:
-        click.echo(click.style("Error: JOB_DATA is not valid JSON.", fg='red'))
-        return
+        return json.loads(raw)
+    except Exception:
+        pass
 
-    command = data.get('command')
-    if not command:
-        click.echo(click.style("Error: Job data must contain a 'command' field.", fg='red'))
-        return
-
-    session = get_session()
+    # Try converting single quotes to double quotes safely
     try:
-        # Get configured max_retries, or use the value from job_data if provided
-        default_max_retries = Config.get('max-retries')
-        max_retries = data.get('max_retries', default_max_retries)
+        fixed = raw.replace("'", '"')
+        return json.loads(fixed)
+    except Exception:
+        pass
 
-        new_job = Job(
-            command=command,
-            state="pending",
-            max_retries=max_retries,
-            # Other fields like id, created_at, updated_at are set by the ORM/DB
-        )
+    # Fallback regex extraction (handles: {"id":"job1","command":"echo Hello"})
+    data = {}
+    id_match = re.search(r'"?id"?\s*:\s*"?([\w\-]+)"?', raw)
+    cmd_match = re.search(r'"?command"?\s*:\s*"?(.*?)"?(?:,|\})', raw)
+    maxr_match = re.search(r'"?max_retries"?\s*:\s*(\d+)', raw)
+    if id_match:
+        data["id"] = id_match.group(1)
+    if cmd_match:
+        data["command"] = cmd_match.group(1).strip()
+    if maxr_match:
+        data["max_retries"] = int(maxr_match.group(1))
 
-        session.add(new_job)
-        session.commit()
+    if not data.get("id") or not data.get("command"):
+        raise ValueError("Unable to parse job input. Please check syntax.")
 
-        click.echo(click.style(f"✅ Job '{new_job.id}' enqueued successfully.", fg='green'))
-        click.echo(f"   Command: {new_job.command}")
-        click.echo(f"   Max Retries: {new_job.max_retries}")
+    return data
 
+
+def cmd_enqueue(args):
+    raw = args.json
+    try:
+        job = smart_parse_job(raw)
     except Exception as e:
-        session.rollback()
-        click.echo(click.style(f"Error enqueuing job: {e}", fg='red'))
-    finally:
-        session.close()
+        print("❌ Invalid job input:", e)
+        return 2
 
-# --- WORKER Group ---
+    job.setdefault("state", "pending")
+    job.setdefault("attempts", 0)
+    job.setdefault("max_retries", Config().get("max_retries"))
+    now = iso_now()
+    job.setdefault("created_at", now)
+    job.setdefault("updated_at", now)
 
-@cli.group()
-def worker():
-    """Manage background worker processes."""
-    pass
-
-@worker.command()
-@click.option('--count', default=1, type=int, help='Number of workers to start.')
-def start(count: int):
-    """Start one or more workers in the background."""
-    active_count = check_workers_active()
-    if active_count > 0:
-        click.echo(f"⚠️ {active_count} worker(s) already running.")
-        if not click.confirm("Do you want to start additional workers?"):
-            return
-
+    storage = JobStorage(DB_PATH)
     try:
-        start_workers(count)
-        click.echo(click.style(f"🚀 Started {count} worker(s).", fg='green'))
-        click.echo("   Use 'queuectl status' to monitor their activity.")
+        storage.add_job(job)
+        print(f"✅ Enqueued job: {job.get('id')} | Command: {job.get('command')}")
+        return 0
     except Exception as e:
-        click.echo(click.style(f"Error starting workers: {e}", fg='red'))
+        print("❌ Failed to enqueue:", e)
+        return 3
 
-@worker.command()
-def stop():
-    """Stop all running workers gracefully."""
-    if stop_workers():
-        click.echo(click.style("🛑 All workers signaled for graceful shutdown.", fg='green'))
-        click.echo("   They will finish their current job before exiting.")
+
+def cmd_status(args):
+    storage = JobStorage(DB_PATH)
+    stats = storage.counts_by_state()
+    workers_running = os.path.exists(STOP_FLAG) and "stopping file present" or "no stop file"
+    print("Job counts:")
+    for s, c in stats.items():
+        print(f"  {s:10s}: {c}")
+    print("Workers stop-flag:", workers_running)
+    return 0
+
+
+def cmd_list(args):
+    storage = JobStorage(DB_PATH)
+    rows = storage.list_jobs(state=args.state, limit=args.limit)
+    for r in rows:
+        print(json.dumps(r, default=str))
+    return 0
+
+
+def cmd_dlq_list(args):
+    storage = JobStorage(DB_PATH)
+    rows = storage.list_jobs(state="dead", limit=args.limit)
+    for r in rows:
+        print(json.dumps(r, default=str))
+    return 0
+
+
+def cmd_dlq_retry(args):
+    storage = JobStorage(DB_PATH)
+    job_id = args.job_id
+    ok = storage.retry_dead_job(job_id)
+    if ok:
+        print("✅ Job moved back to pending:", job_id)
+        return 0
     else:
-        click.echo("No active workers found.")
+        print("❌ Could not retry job:", job_id)
+        return 4
 
-# --- STATUS Command ---
 
-@cli.command()
-def status():
-    """Show summary of all job states and active workers."""
-    click.echo(click.style("## 📊 System Status", fg='cyan'))
-
-    # 1. Worker Status
-    active_count = check_workers_active()
-    pids = get_worker_pids()
-    click.echo(f"\n### 🧑‍💻 Worker Status ({len(pids)} Active)")
-    if pids:
-        click.echo("PIDs: " + ", ".join(map(str, pids)))
-    else:
-        click.echo(click.style("No workers are currently running.", fg='yellow'))
-    
-    # 2. Job Summary
-    summary = get_job_summary()
-    click.echo("\n### 📋 Job Summary")
-    summary_data = []
-    for state, count in summary.items():
-        summary_data.append([
-            f"{STATE_EMOJIS.get(state, '')} {state.capitalize()}",
-            f"{count} jobs"
-        ])
-    
-    if summary_data:
-        click.echo(print_job_table(
-            headers=['State', 'Count'],
-            data=summary_data
-        ))
-    else:
-        click.echo("No jobs found in the queue.")
-
-# --- LIST Command ---
-
-@cli.command()
-@click.option('--state', '-s', type=click.Choice(list(STATE_EMOJIS.keys()) + ['all']), default='all', help='Filter jobs by state.')
-@click.option('--limit', '-l', default=10, type=int, help='Limit the number of jobs displayed.')
-def list(state: str, limit: int):
-    """List jobs by state."""
-    session = get_session()
-    try:
-        query = session.query(Job)
-        if state != 'all':
-            query = query.filter(Job.state == state)
-
-        jobs = query.order_by(Job.created_at.desc()).limit(limit).all()
-
-        click.echo(click.style(f"## 📜 Job List (State: {state.capitalize()})", fg='cyan'))
-
-        if not jobs:
-            click.echo(f"No {state} jobs found.")
-            return
-
-        table_data = []
-        for job in jobs:
-            table_data.append([
-                str(job.id)[:8],
-                STATE_EMOJIS.get(job.state, '') + ' ' + job.state,
-                str(job.attempts),
-                job.command[:40] + ('...' if len(job.command) > 40 else ''),
-                job.updated_at.strftime('%Y-%m-%d %H:%M:%S UTC') if job.updated_at else 'N/A'
-            ])
-
-        click.echo(print_job_table(
-            headers=['ID', 'State', 'Attempts', 'Command', 'Updated At'],
-            data=table_data
-        ))
-
-    finally:
-        session.close()
-
-# --- DLQ Group ---
-
-@cli.group()
-def dlq():
-    """Manage the Dead Letter Queue (DLQ)."""
-    pass
-
-@dlq.command(name='list')
-@click.option('--limit', '-l', default=10, type=int, help='Limit the number of jobs displayed.')
-def dlq_list(limit: int):
-    """List jobs permanently failed in the DLQ."""
-    session = get_session()
-    try:
-        jobs = session.query(Job).filter(Job.state == 'dead').order_by(Job.updated_at.desc()).limit(limit).all()
-
-        click.echo(click.style("## ⚰️ Dead Letter Queue", fg='red'))
-
-        if not jobs:
-            click.echo("The DLQ is empty.")
-            return
-
-        table_data = []
-        for job in jobs:
-            table_data.append([
-                str(job.id)[:8],
-                str(job.attempts),
-                job.command[:40] + ('...' if len(job.command) > 40 else ''),
-                job.updated_at.strftime('%Y-%m-%d %H:%M:%S UTC') if job.updated_at else 'N/A'
-            ])
-
-        click.echo(print_job_table(
-            headers=['ID', 'Final Attempts', 'Command', 'Moved to DLQ At'],
-            data=table_data
-        ))
-
-    finally:
-        session.close()
-
-@dlq.command()
-@click.argument('job_id', type=str)
-def retry(job_id: str):
-    """
-    Retry a specific job from the DLQ.
-
-    This resets the job's state to 'pending' and attempts to 0.
-    """
-    session = get_session()
-    try:
-        job: Optional[Job] = session.query(Job).filter(Job.id == job_id, Job.state == 'dead').first()
-
-        if not job:
-            click.echo(click.style(f"Error: Dead job with ID '{job_id}' not found.", fg='red'))
-            return
-
-        old_attempts = job.attempts
-        job.state = 'pending'
-        job.attempts = 0
-        job.updated_at = datetime.now(timezone.utc)
-        session.commit()
-
-        click.echo(click.style(f"🔁 Job '{job_id}' retried successfully.", fg='green'))
-        click.echo(f"   Command: {job.command}")
-        click.echo(f"   Old Attempts: {old_attempts}. Reset to 0.")
-        click.echo("   It will be picked up by a worker soon.")
-
-    except Exception as e:
-        session.rollback()
-        click.echo(click.style(f"Error retrying job: {e}", fg='red'))
-    finally:
-        session.close()
-
-# --- CONFIG Group ---
-
-@cli.group()
-def config():
-    """Manage system configuration."""
-    pass
-
-@config.command(name='set')
-@click.argument('key')
-@click.argument('value')
-def config_set(key: str, value: str):
-    """Set a configuration KEY to VALUE."""
-    if key in Config.ALLOWED_KEYS:
+def cmd_config(args):
+    cfg = Config()
+    if args.set:
+        key, val = args.set
         try:
-            Config.set(key, value)
-            click.echo(click.style(f"⚙️ Configuration '{key}' set to '{value}'.", fg='green'))
-        except ValueError as e:
-            click.echo(click.style(f"Error: {e}", fg='red'))
+            v = int(val)
+        except:
+            try:
+                v = float(val)
+            except:
+                if val.lower() in ("true", "false"):
+                    v = val.lower() == "true"
+                else:
+                    v = val
+        cfg.set(key, v)
+        print(f"✅ Set {key} = {v}")
+        return 0
     else:
-        click.echo(click.style(f"Error: Unknown configuration key '{key}'. Allowed keys: {', '.join(Config.ALLOWED_KEYS)}", fg='red'))
+        for k, v in cfg.all().items():
+            print(f"{k}: {v}")
+        return 0
 
-@config.command(name='get')
-@click.argument('key', required=False)
-def config_get(key: Optional[str]):
-    """Get the value of a configuration KEY, or all if none specified."""
-    if key:
-        if key in Config.ALLOWED_KEYS:
-            value = Config.get(key)
-            click.echo(f"Configuration '{key}': {value}")
-        else:
-            click.echo(click.style(f"Error: Unknown configuration key '{key}'.", fg='red'))
-    else:
-        click.echo(click.style("## ⚙️ Current Configuration", fg='cyan'))
-        config_data = []
-        for k in Config.ALLOWED_KEYS:
-            config_data.append([k, str(Config.get(k))])
 
-        click.echo(print_job_table(
-            headers=['Key', 'Value'],
-            data=config_data
-        ))
+def cmd_worker_start(args):
+    count = args.count or 1
+    print(f"Starting {count} worker(s). Press Ctrl+C to stop or run 'python queuectl.py worker stop'")
+    try:
+        if os.path.exists(STOP_FLAG):
+            os.remove(STOP_FLAG)
+    except:
+        pass
+    mgr = WorkerManager(DB_PATH, count=count)
+    try:
+        mgr.run_forever()
+    except KeyboardInterrupt:
+        print("Stopping workers (KeyboardInterrupt). Waiting graceful shutdown...")
+        mgr.stop()
+    return 0
 
-# --- Main Execution ---
 
-# At the bottom of queuectl.py
+def cmd_worker_stop(args):
+    open(STOP_FLAG, "w").write("stop")
+    print("✅ Stop flag created. Running workers will finish current job and stop.")
+    return 0
 
-if __name__ == '__main__':
-    # Add check for the special worker flag used in Popen
-    if len(sys.argv) > 1 and sys.argv[1] == '__worker__':
-        # This branch runs if the process was started by the start_workers Popen call
-        # Initialize and run a single worker instance
-        initialize_db()
-        current_pid = os.getpid()
-        
-        # On Windows, we still write the PID file, but it's less reliable
-        pid_file_path = get_pid_file(current_pid)
-        with open(pid_file_path, 'w') as f:
-            f.write(str(current_pid))
-            
-        worker = Worker(current_pid)
-        worker.run()
-        
-    else:
-        # This runs for all CLI commands (enqueue, status, worker start, etc.)
-        cli()
+
+def cmd_init(args):
+    storage = JobStorage(DB_PATH)
+    storage.init_db()
+    print("✅ Initialized DB at", DB_PATH)
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="queuectl")
+    sub = parser.add_subparsers(dest="cmd")
+
+    p_enqueue = sub.add_parser("enqueue")
+    p_enqueue.add_argument("json", help="Job JSON string")
+    p_enqueue.set_defaults(func=cmd_enqueue)
+
+    p_status = sub.add_parser("status")
+    p_status.set_defaults(func=cmd_status)
+
+    p_list = sub.add_parser("list")
+    p_list.add_argument("--state", default=None)
+    p_list.add_argument("--limit", type=int, default=100)
+    p_list.set_defaults(func=cmd_list)
+
+    p_dlq = sub.add_parser("dlq")
+    dlq_sub = p_dlq.add_subparsers(dest="dlq_cmd")
+    dlq_list = dlq_sub.add_parser("list")
+    dlq_list.add_argument("--limit", type=int, default=100)
+    dlq_list.set_defaults(func=cmd_dlq_list)
+    dlq_retry = dlq_sub.add_parser("retry")
+    dlq_retry.add_argument("job_id")
+    dlq_retry.set_defaults(func=cmd_dlq_retry)
+
+    p_worker = sub.add_parser("worker")
+    wsub = p_worker.add_subparsers(dest="worker_cmd")
+    w_start = wsub.add_parser("start")
+    w_start.add_argument("--count", type=int, default=1)
+    w_start.set_defaults(func=cmd_worker_start)
+    w_stop = wsub.add_parser("stop")
+    w_stop.set_defaults(func=cmd_worker_stop)
+
+    p_config = sub.add_parser("config")
+    p_config.add_argument("set", nargs="*", help="set key value", default=None)
+    p_config.add_argument("--get", action="store_true", help="show config")
+    p_config.set_defaults(func=lambda a: cmd_config(a) if a.set else cmd_config(a))
+
+    p_init = sub.add_parser("init-db")
+    p_init.set_defaults(func=cmd_init)
+
+    args_raw = sys.argv[1:]
+    if len(args_raw) >= 2 and args_raw[0] == "config" and args_raw[1] == "set":
+        args = argparse.Namespace(set=(args_raw[2], args_raw[3]) if len(args_raw) >= 4 else None)
+        return cmd_config(args)
+
+    args = parser.parse_args()
+    if not hasattr(args, "func") or args.func is None:
+        parser.print_help()
+        return 1
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

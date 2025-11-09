@@ -1,3 +1,0 @@
-click
-SQLALchemy
-prettytable
