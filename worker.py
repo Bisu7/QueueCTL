@@ -29,7 +29,22 @@ class Worker(threading.Thread):
             start_ts = datetime.now(timezone.utc).isoformat()
             try:
                 
-                r = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.cfg.get("job_timeout"))
+                timeout = self.cfg.get("job_timeout")
+                try:
+                    r = subprocess.run(
+                        cmd,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=timeout
+                    )
+                except subprocess.TimeoutExpired:
+                    print(f"[worker-{self.wid}] job {job_id} timed out after {timeout}s")
+                    attempts, maxr = self.storage.increment_attempts_and_backoff(job_id)
+                    if attempts >= maxr:
+                        self.storage.move_to_dead(job_id, last_error="timeout")
+                        print(f"[worker-{self.wid}] moved {job_id} to DLQ (timeout)")
+                    continue
                 if r.returncode == 0:
                     self.storage.update_job_completion(job_id, "completed", attempts=job.get("attempts", 0))
                     print(f"[worker-{self.wid}] completed {job_id}")

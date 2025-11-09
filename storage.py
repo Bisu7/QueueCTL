@@ -12,11 +12,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     state TEXT,
     attempts INTEGER,
     max_retries INTEGER,
+    priority INTEGER DEFAULT 0,
+    run_at TEXT,
     created_at TEXT,
     updated_at TEXT,
     last_error TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_state ON jobs(state);
+CREATE INDEX IF NOT EXISTS idx_state_priority ON jobs(state, priority DESC, created_at);
 """
 
 class JobStorage:
@@ -72,7 +74,7 @@ class JobStorage:
 
     def fetch_and_lock_pending(self):
         with self._conn:
-            cur = self._conn.execute("SELECT id, payload, attempts, max_retries FROM jobs WHERE state='pending' ORDER BY created_at LIMIT 1")
+            cur = self._conn.execute("SELECT id, payload, attempts, max_retries FROM jobs WHERE state='pending' AND (run_at IS NULL OR run_at <= CURRENT_TIMESTAMP) ORDER BY priority DESC, created_at LIMIT 1")
             row = cur.fetchone()
             if not row:
                 return None
