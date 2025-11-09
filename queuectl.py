@@ -61,6 +61,24 @@ def cmd_enqueue(args):
     job.setdefault("created_at", now)
     job.setdefault("updated_at", now)
 
+    # 🕒 Handle scheduled / delayed jobs (run_at)
+    if "run_at" in job:
+        try:
+            # If numeric (like "10"), schedule after 10 seconds
+            if str(job["run_at"]).isdigit():
+                delay_secs = int(job["run_at"])
+                future_time = datetime.now(timezone.utc).timestamp() + delay_secs
+                job["run_at"] = datetime.fromtimestamp(future_time, tz=timezone.utc).isoformat()
+            else:
+                # Validate ISO timestamp
+                _ = datetime.fromisoformat(job["run_at"].replace("Z", "+00:00"))
+        except Exception:
+            print("⚠️ Invalid run_at value. Ignoring scheduling.")
+            job["run_at"] = None
+    else:
+        job["run_at"] = None
+
+
     storage = JobStorage(DB_PATH)
     try:
         storage.add_job(job)

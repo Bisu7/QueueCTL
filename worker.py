@@ -17,6 +17,18 @@ class Worker(threading.Thread):
         self.wid = wid
         self.cfg = Config()
 
+    def _log_output(self, job_id, stdout, stderr):
+        import os
+        from datetime import datetime
+        os.makedirs("logs", exist_ok=True)
+        with open(f"logs/{job_id}.log", "a", encoding="utf-8") as f:
+            f.write(f"\n==== {datetime.now(timezone.utc).isoformat()} ====\n")
+            if stdout:
+                f.write(f"STDOUT:\n{stdout}\n")
+            if stderr:
+                f.write(f"STDERR:\n{stderr}\n")
+
+
     def run(self):
         poll = float(self.cfg.get("worker_poll_interval",1.0))
         while not self._should_stop():

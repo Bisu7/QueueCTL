@@ -74,7 +74,10 @@ class JobStorage:
 
     def fetch_and_lock_pending(self):
         with self._conn:
-            cur = self._conn.execute("SELECT id, payload, attempts, max_retries FROM jobs WHERE state='pending' AND (run_at IS NULL OR run_at <= CURRENT_TIMESTAMP) ORDER BY priority DESC, created_at LIMIT 1")
+            cur = self._conn.execute("SELECT id, payload, attempts, max_retries FROM jobs "
+                "WHERE state='pending' AND (run_at IS NULL OR run_at <= CURRENT_TIMESTAMP) "
+                "ORDER BY created_at LIMIT 1"
+                )
             row = cur.fetchone()
             if not row:
                 return None
