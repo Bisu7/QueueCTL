@@ -1,12 +1,8 @@
-"""
-Worker manager and worker logic.
-"""
 import threading
 import subprocess
 import time
 import os
-import shlex
-from datetime import datetime
+from datetime import datetime, timezone
 from config import Config
 from storage import JobStorage
 
@@ -30,10 +26,9 @@ class Worker(threading.Thread):
             job_id = job.get("id")
             cmd = job.get("command")
             print(f"[worker-{self.wid}] picked job {job_id} -> {cmd}")
-            start_ts = datetime.utcnow().isoformat() + "Z"
+            start_ts = datetime.now(timezone.utc).isoformat()
             try:
-                # execute command using shell for compatibility with simple commands
-                # use subprocess.run; capture output
+                
                 r = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.cfg.get("job_timeout"))
                 if r.returncode == 0:
                     self.storage.update_job_completion(job_id, "completed", attempts=job.get("attempts", 0))
@@ -42,15 +37,19 @@ class Worker(threading.Thread):
                     err = r.stderr.decode('utf-8', errors='replace') or r.stdout.decode('utf-8', errors='replace')
                     print(f"[worker-{self.wid}] job {job_id} failed rc={r.returncode}: {err.strip()}")
                     attempts, maxr = self.storage.increment_attempts_and_backoff(job_id)
-                    # decide move to dead or schedule backoff by sleeping
                     if attempts >= maxr:
                         self.storage.move_to_dead(job_id, last_error=err[:1000])
                         print(f"[worker-{self.wid}] moved {job_id} to DLQ")
                     else:
                         backoff = (self.cfg.get("backoff_base",2) ** attempts)
                         print(f"[worker-{self.wid}] sleeping backoff {backoff}s for job {job_id} before next retry")
-                        # Note: simple sleep for backoff. Another design is to store run_at; we keep simple behavior.
-                        time.sleep(backoff)
+                        slept = 0
+                        while slept < backoff:
+                            if self._should_stop():
+                                print(f"[worker-{self.wid}] stop requested during backoff; exiting gracefully.")
+                                return
+                            time.sleep(0.5)
+                            slept += 0.5
             except subprocess.TimeoutExpired as toe:
                 print(f"[worker-{self.wid}] job {job_id} timed out")
                 attempts, maxr = self.storage.increment_attempts_and_backoff(job_id)
@@ -64,7 +63,6 @@ class Worker(threading.Thread):
                     self.storage.move_to_dead(job_id, last_error=str(e))
 
     def _should_stop(self):
-        # stop if stop file present
         return os.path.exists(STOP_FLAG)
 
 class WorkerManager:
@@ -74,18 +72,16 @@ class WorkerManager:
         self.workers = []
 
     def run_forever(self):
-        # spawn threads
         for i in range(self.count):
             w = Worker(self.storage, wid=i+1)
             w.start()
             self.workers.append(w)
-        # join and wait for stop
         while True:
             time.sleep(0.5)
             if os.path.exists(STOP_FLAG):
                 print("Stop flag detected; requesting workers to stop gracefully")
                 break
-            # also check threads alive
+            #check threads alive
             alive = any(t.is_alive() for t in self.workers)
             if not alive:
                 print("All workers finished")
@@ -95,6 +91,5 @@ class WorkerManager:
             t.join(timeout=10)
 
     def stop(self):
-        # create stop flag
         open(STOP_FLAG, "w").write("stop")
 

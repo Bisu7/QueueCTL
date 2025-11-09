@@ -1,10 +1,8 @@
-import argparse
-import json
-import os
-import re
-import sys
-import time
+import argparse, json, os
+import re, sys
 from datetime import datetime, timezone
+from dlq import DLQManager
+
 
 from storage import JobStorage
 from worker import WorkerManager
@@ -19,26 +17,18 @@ def iso_now():
 
 
 def smart_parse_job(raw: str) -> dict:
-    """
-    Parse job input string. Works with PowerShell-style single-quoted JSON.
-    Falls back to regex extraction if strict JSON fails.
-    """
     raw = raw.strip()
-
-    # First try normal JSON
     try:
         return json.loads(raw)
     except Exception:
         pass
 
-    # Try converting single quotes to double quotes safely
     try:
         fixed = raw.replace("'", '"')
         return json.loads(fixed)
     except Exception:
         pass
 
-    # Fallback regex extraction (handles: {"id":"job1","command":"echo Hello"})
     data = {}
     id_match = re.search(r'"?id"?\s*:\s*"?([\w\-]+)"?', raw)
     cmd_match = re.search(r'"?command"?\s*:\s*"?(.*?)"?(?:,|\})', raw)
@@ -61,7 +51,7 @@ def cmd_enqueue(args):
     try:
         job = smart_parse_job(raw)
     except Exception as e:
-        print("❌ Invalid job input:", e)
+        print("Invalid job input:", e)
         return 2
 
     job.setdefault("state", "pending")
@@ -74,10 +64,10 @@ def cmd_enqueue(args):
     storage = JobStorage(DB_PATH)
     try:
         storage.add_job(job)
-        print(f"✅ Enqueued job: {job.get('id')} | Command: {job.get('command')}")
+        print(f"Enqueued job: {job.get('id')} | Command: {job.get('command')}")
         return 0
     except Exception as e:
-        print("❌ Failed to enqueue:", e)
+        print("Failed to enqueue:", e)
         return 3
 
 
@@ -101,22 +91,19 @@ def cmd_list(args):
 
 
 def cmd_dlq_list(args):
-    storage = JobStorage(DB_PATH)
-    rows = storage.list_jobs(state="dead", limit=args.limit)
-    for r in rows:
-        print(json.dumps(r, default=str))
+    dlq = DLQManager(DB_PATH)
+    dlq.print_dlq(limit=args.limit)
     return 0
 
 
 def cmd_dlq_retry(args):
-    storage = JobStorage(DB_PATH)
-    job_id = args.job_id
-    ok = storage.retry_dead_job(job_id)
+    dlq = DLQManager(DB_PATH)
+    ok = dlq.retry_job(args.job_id)
     if ok:
-        print("✅ Job moved back to pending:", job_id)
+        print("Job moved back to pending:", args.job_id)
         return 0
     else:
-        print("❌ Could not retry job:", job_id)
+        print("Could not retry job:", args.job_id)
         return 4
 
 
@@ -162,14 +149,14 @@ def cmd_worker_start(args):
 
 def cmd_worker_stop(args):
     open(STOP_FLAG, "w").write("stop")
-    print("✅ Stop flag created. Running workers will finish current job and stop.")
+    print("Stop flag created. Running workers will finish current job and stop.")
     return 0
 
 
 def cmd_init(args):
     storage = JobStorage(DB_PATH)
     storage.init_db()
-    print("✅ Initialized DB at", DB_PATH)
+    print("Initialized DB at", DB_PATH)
     return 0
 
 

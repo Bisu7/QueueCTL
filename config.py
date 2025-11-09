@@ -1,14 +1,11 @@
-"""
-Simple JSON-backed configuration.
-"""
 import json
 import os
 
 DEFAULTS = {
     "max_retries": 3,
     "backoff_base": 2,
-    "worker_poll_interval": 1.0,  # seconds
-    "job_timeout": 60,  # seconds default timeout
+    "worker_poll_interval": 1.0,  
+    "job_timeout": 60,  
 }
 
 CFG_PATH = os.path.join(os.path.dirname(__file__), "queuectl_config.json")

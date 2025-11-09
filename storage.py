@@ -1,6 +1,3 @@
-"""
-SQLite-based job storage with simple locking updates.
-"""
 import sqlite3
 import json
 import threading
@@ -63,7 +60,7 @@ class JobStorage:
         res = []
         for r in cur.fetchall():
             obj = json.loads(r["payload"])
-            # expose current DB state/attempts
+            
             obj["state"] = r["state"]
             obj["attempts"] = r["attempts"]
             obj["max_retries"] = r["max_retries"]
@@ -74,10 +71,6 @@ class JobStorage:
         return res
 
     def fetch_and_lock_pending(self):
-        """
-        Atomically pick one pending job and mark it processing.
-        Uses a transaction and update-if-state to avoid duplicates.
-        """
         with self._conn:
             cur = self._conn.execute("SELECT id, payload, attempts, max_retries FROM jobs WHERE state='pending' ORDER BY created_at LIMIT 1")
             row = cur.fetchone()
@@ -85,16 +78,14 @@ class JobStorage:
                 return None
             job_id = row["id"]
             now = datetime.now(timezone.utc).isoformat()
-            # set to processing only if still pending
             updated = self._conn.execute("UPDATE jobs SET state=?, updated_at=? WHERE id=? AND state='pending'", ("processing", now, job_id)).rowcount
             if updated:
-                # fetch full row
                 r = self._conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
                 return json.loads(r["payload"])
             return None
 
     def update_job_completion(self, job_id, state, attempts=None, last_error=None):
-        now = datetime.utcnow().isoformat() + "Z"
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn:
             if attempts is None:
                 self._conn.execute("UPDATE jobs SET state=?, updated_at=?, last_error=? WHERE id=?", (state, now, last_error, job_id))
@@ -102,7 +93,7 @@ class JobStorage:
                 self._conn.execute("UPDATE jobs SET state=?, attempts=?, updated_at=?, last_error=? WHERE id=?", (state, attempts, now, last_error, job_id))
 
     def increment_attempts_and_backoff(self, job_id):
-        now = datetime.utcnow().isoformat() + "Z"
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn:
             cur = self._conn.execute("SELECT attempts, max_retries FROM jobs WHERE id=?", (job_id,))
             r = cur.fetchone()
@@ -113,12 +104,12 @@ class JobStorage:
             return attempts, r["max_retries"]
 
     def move_to_dead(self, job_id, last_error=None):
-        now = datetime.utcnow().isoformat() + "Z"
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn:
             self._conn.execute("UPDATE jobs SET state='dead', updated_at=?, last_error=? WHERE id=?", (now, last_error, job_id))
 
     def retry_dead_job(self, job_id):
-        now = datetime.utcnow().isoformat() + "Z"
+        now = datetime.now(timezone.utc).isoformat()
         with self._conn:
             cur = self._conn.execute("SELECT id FROM jobs WHERE id=? AND state='dead'", (job_id,))
             if cur.fetchone():
