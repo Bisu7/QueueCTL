@@ -12,6 +12,7 @@ def main() -> None:
 
 @main.command()
 def status() -> None:
+    """Show the current status of the job queue."""
     conn = get_connection()
     try:
         row = conn.execute("SELECT COUNT(*) FROM jobs;").fetchone()
