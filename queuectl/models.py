@@ -13,6 +13,7 @@ class Job:
     updated_at: str
     locked_by: Optional[str] = None
     locked_at: Optional[str] = None
+    lease_expires_at: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Job":
@@ -26,6 +27,7 @@ class Job:
             updated_at=row["updated_at"],
             locked_by=row["locked_by"],
             locked_at=row["locked_at"],
+            lease_expires_at=row["lease_expires_at"] if "lease_expires_at" in row.keys() else None,
         )
 
     def to_dict(self) -> dict:
