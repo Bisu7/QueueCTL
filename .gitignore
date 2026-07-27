@@ -1,0 +1,19 @@
+# Python caches and bytecode
+__pycache__/
+*.pyc
+
+# Local SQLite database files
+*.db
+*.db-wal
+*.db-shm
+
+# Virtual environments & IDE configurations
+.venv/
+venv/
+.vscode/
+.idea/
+
+# Packaging builds
+*.egg-info/
+build/
+dist/
