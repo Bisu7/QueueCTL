@@ -35,12 +35,18 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             locked_by TEXT,
             locked_at TEXT,
-            lease_expires_at TEXT
+            lease_expires_at TEXT,
+            next_attempt_at TEXT
         );
     """)
     
     try:
         conn.execute("ALTER TABLE jobs ADD COLUMN lease_expires_at TEXT;")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN next_attempt_at TEXT;")
     except sqlite3.OperationalError:
         pass
     
@@ -63,8 +69,6 @@ def claim_next_job(conn: sqlite3.Connection, worker_id: Optional[str] = None) ->
     lease_duration = int(get_config(conn, "lease_duration", "300"))
     lease_expires = (now + datetime.timedelta(seconds=lease_duration)).isoformat()
     
-    retry_base_delay = int(get_config(conn, "retry_base_delay", "30"))
-    
     query = """
         UPDATE jobs
         SET state = 'processing',
@@ -78,16 +82,15 @@ def claim_next_job(conn: sqlite3.Connection, worker_id: Optional[str] = None) ->
             WHERE state = 'pending'
                OR (
                    state = 'failed'
-                   AND attempts <= max_retries
-                   AND datetime(updated_at, '+' || (attempts * ?) || ' seconds') <= datetime(?)
+                   AND (next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime(?))
                )
             ORDER BY created_at ASC
             LIMIT 1
         ) AND state IN ('pending', 'failed')
-        RETURNING id, command, state, attempts, max_retries, created_at, updated_at, locked_by, locked_at, lease_expires_at;
+        RETURNING id, command, state, attempts, max_retries, created_at, updated_at, locked_by, locked_at, lease_expires_at, next_attempt_at;
     """
     
-    cur = conn.execute(query, (now_str, lease_expires, worker_id, now_str, retry_base_delay, now_str))
+    cur = conn.execute(query, (now_str, lease_expires, worker_id, now_str, now_str))
     row = cur.fetchone()
     if row is None:
         return None
