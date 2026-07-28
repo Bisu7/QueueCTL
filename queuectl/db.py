@@ -56,6 +56,16 @@ def init_db(conn: sqlite3.Connection) -> None:
             value TEXT NOT NULL
         );
     """)
+    
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS workers (
+            id TEXT PRIMARY KEY,
+            pid INTEGER NOT NULL,
+            started_at TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            stop_requested INTEGER NOT NULL DEFAULT 0
+        );
+    """)
     conn.commit()
 
 def claim_next_job(conn: sqlite3.Connection, worker_id: Optional[str] = None) -> Optional[Job]:
@@ -149,3 +159,47 @@ def reap_expired_jobs(conn: sqlite3.Connection) -> None:
                 (now_str, job_id)
             )
     conn.commit()
+
+def register_worker(conn: sqlite3.Connection, worker_id: str, pid: int) -> None:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO workers (id, pid, started_at, last_seen, stop_requested) VALUES (?, ?, ?, ?, 0);",
+        (worker_id, pid, now, now)
+    )
+    conn.commit()
+
+def unregister_worker(conn: sqlite3.Connection, worker_id: str) -> None:
+    conn.execute("DELETE FROM workers WHERE id = ?;", (worker_id,))
+    conn.commit()
+
+def update_worker_heartbeat(conn: sqlite3.Connection, worker_id: str) -> None:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn.execute("UPDATE workers SET last_seen = ? WHERE id = ?;", (now, worker_id))
+    conn.commit()
+
+def check_stop_requested(conn: sqlite3.Connection, worker_id: str) -> bool:
+    row = conn.execute("SELECT stop_requested FROM workers WHERE id = ?;", (worker_id,)).fetchone()
+    if row is None:
+        return True
+    return bool(row["stop_requested"])
+
+def request_all_workers_stop(conn: sqlite3.Connection) -> int:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    window = (now - datetime.timedelta(seconds=15)).isoformat()
+    cur = conn.execute("UPDATE workers SET stop_requested = 1 WHERE datetime(last_seen) >= datetime(?);", (window,))
+    conn.commit()
+    return cur.rowcount
+
+def count_active_workers(conn: sqlite3.Connection, heartbeat_window_seconds: int = 15) -> int:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    window = (now - datetime.timedelta(seconds=heartbeat_window_seconds)).isoformat()
+    
+    conn.execute("DELETE FROM workers WHERE datetime(last_seen) < datetime(?, '-60 seconds');", (now.isoformat(),))
+    conn.commit()
+    
+    row = conn.execute(
+        "SELECT COUNT(*) FROM workers WHERE datetime(last_seen) >= datetime(?);",
+        (window,)
+    ).fetchone()
+    return row[0] if row else 0
+

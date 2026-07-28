@@ -23,15 +23,23 @@ def main() -> None:
 
 @main.command()
 def status() -> None:
-    """Show the current status of the job queue."""
+    """Show the current status of the job queue and active workers."""
     conn = get_connection()
     try:
-        row = conn.execute("SELECT COUNT(*) FROM jobs;").fetchone()
-        count = row[0] if row else 0
-        if count == 0:
+        # Get summary count per state
+        rows = conn.execute("SELECT state, COUNT(*) as cnt FROM jobs GROUP BY state;").fetchall()
+        counts = {r["state"]: r["cnt"] for r in rows}
+        
+        from queuectl.db import count_active_workers
+        active_workers = count_active_workers(conn)
+        
+        total_jobs = sum(counts.values())
+        if total_jobs == 0:
             click.echo("no jobs yet")
         else:
-            click.echo(f"{count} jobs in the queue")
+            click.echo(f"Active Workers: {active_workers}")
+            for state in ["pending", "processing", "completed", "failed", "dead"]:
+                click.echo(f"Jobs in {state:<10}: {counts.get(state, 0)}")
     finally:
         conn.close()
 
@@ -147,6 +155,7 @@ class LeaseRenewer:
                     """,
                     (lease_expires, now.isoformat(), self.job_id, self.worker_id)
                 )
+                conn.execute("UPDATE workers SET last_seen = ? WHERE id = ?;", (now.isoformat(), self.worker_id))
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
@@ -165,94 +174,109 @@ def worker_run(db_path: str, worker_id: str, stop_event: multiprocessing.Event) 
     
     conn = get_connection(db_path)
     
-    while not stop_requested and not stop_event.is_set():
-        from queuectl.db import reap_expired_jobs
-        try:
-            reap_expired_jobs(conn)
-        except sqlite3.OperationalError:
-            pass
-            
-        try:
-            job = claim_next_job(conn, worker_id)
-        except sqlite3.OperationalError:
-            time.sleep(1)
-            continue
-            
-        if job is None:
-            for _ in range(10):
-                if stop_requested or stop_event.is_set():
+    from queuectl.db import register_worker, unregister_worker, update_worker_heartbeat, check_stop_requested, reap_expired_jobs
+    
+    try:
+        register_worker(conn, worker_id, os.getpid())
+        
+        while not stop_requested and not stop_event.is_set():
+            try:
+                reap_expired_jobs(conn)
+            except sqlite3.OperationalError:
+                pass
+                
+            try:
+                update_worker_heartbeat(conn, worker_id)
+                if check_stop_requested(conn, worker_id):
                     break
-                time.sleep(0.1)
-            continue
+            except sqlite3.OperationalError:
+                pass
+                
+            try:
+                job = claim_next_job(conn, worker_id)
+            except sqlite3.OperationalError:
+                time.sleep(1)
+                continue
+                
+            if job is None:
+                for _ in range(10):
+                    if stop_requested or stop_event.is_set():
+                        break
+                    time.sleep(0.1)
+                continue
+                
+            lease_duration = int(get_config(conn, "lease_duration", "15"))
+            renewer = LeaseRenewer(db_path, job.id, worker_id, lease_duration)
+            renewer.start()
             
-        lease_duration = int(get_config(conn, "lease_duration", "15"))
-        renewer = LeaseRenewer(db_path, job.id, worker_id, lease_duration)
-        renewer.start()
-        
-        old_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        try:
-            result = subprocess.run(job.command, shell=True)
-            exit_code = result.returncode
-        except Exception:
-            exit_code = -1
-        finally:
-            signal.signal(signal.SIGINT, old_sigint)
-            renewer.stop()
+            old_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+            try:
+                result = subprocess.run(job.command, shell=True)
+                exit_code = result.returncode
+            except Exception:
+                exit_code = -1
+            finally:
+                signal.signal(signal.SIGINT, old_sigint)
+                renewer.stop()
+                
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
             
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        
-        if exit_code == 0:
-            conn.execute(
-                """
-                UPDATE jobs
-                SET state = 'completed',
-                    updated_at = ?,
-                    locked_by = NULL,
-                    locked_at = NULL,
-                    lease_expires_at = NULL,
-                    next_attempt_at = NULL
-                WHERE id = ?;
-                """,
-                (now, job.id)
-            )
-            conn.commit()
-        else:
-            base = int(get_config(conn, "retry_backoff_base", "2"))
-            attempts = job.attempts
-            
-            if attempts < job.max_retries:
-                delay = base ** attempts
-                next_run = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=delay)).isoformat()
+            if exit_code == 0:
                 conn.execute(
                     """
                     UPDATE jobs
-                    SET state = 'failed',
+                    SET state = 'completed',
                         updated_at = ?,
-                        next_attempt_at = ?,
                         locked_by = NULL,
                         locked_at = NULL,
-                        lease_expires_at = NULL
-                    WHERE id = ?;
-                    """,
-                    (now, next_run, job.id)
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE jobs
-                    SET state = 'dead',
-                        updated_at = ?,
-                        next_attempt_at = NULL,
-                        locked_by = NULL,
-                        locked_at = NULL,
-                        lease_expires_at = NULL
+                        lease_expires_at = NULL,
+                        next_attempt_at = NULL
                     WHERE id = ?;
                     """,
                     (now, job.id)
                 )
-            conn.commit()
-            
-    conn.close()
+                conn.commit()
+            else:
+                base = int(get_config(conn, "retry_backoff_base", "2"))
+                attempts = job.attempts
+                
+                if attempts < job.max_retries:
+                    delay = base ** attempts
+                    next_run = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=delay)).isoformat()
+                    conn.execute(
+                        """
+                        UPDATE jobs
+                        SET state = 'failed',
+                            updated_at = ?,
+                            next_attempt_at = ?,
+                            locked_by = NULL,
+                            locked_at = NULL,
+                            lease_expires_at = NULL
+                        WHERE id = ?;
+                        """,
+                        (now, next_run, job.id)
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE jobs
+                        SET state = 'dead',
+                            updated_at = ?,
+                            next_attempt_at = NULL,
+                            locked_by = NULL,
+                            locked_at = NULL,
+                            lease_expires_at = NULL
+                        WHERE id = ?;
+                        """,
+                        (now, job.id)
+                    )
+                conn.commit()
+    finally:
+        try:
+            unregister_worker(conn, worker_id)
+        except Exception:
+            pass
+        conn.close()
 
 @main.group()
 def worker() -> None:
@@ -265,7 +289,6 @@ def start_workers(count: int) -> None:
     """Start N background worker processes in the foreground."""
     db_path = get_db_path()
     
-    # Pre-verify the database is initialized
     conn = get_connection(db_path)
     try:
         init_db(conn)
@@ -303,6 +326,32 @@ def start_workers(count: int) -> None:
             stop_event.set()
             
     click.echo("All workers stopped.")
+
+@worker.command("stop")
+def stop_workers() -> None:
+    """Gracefully stop all running workers."""
+    db_path = get_db_path()
+    conn = get_connection(db_path)
+    try:
+        from queuectl.db import request_all_workers_stop, count_active_workers
+        active_count = count_active_workers(conn)
+        if active_count == 0:
+            click.echo("No active workers running.")
+            return
+            
+        click.echo(f"Signaling {active_count} active worker(s) to stop...")
+        request_all_workers_stop(conn)
+        
+        start_time = time.time()
+        while count_active_workers(conn) > 0:
+            time.sleep(0.5)
+            if time.time() - start_time > 60:
+                click.echo("\nTimeout waiting for workers to stop gracefully. Force exiting.")
+                return
+                
+        click.echo("All workers stopped successfully.")
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     main()
