@@ -113,6 +113,46 @@ def list(state: str, as_json: bool) -> None:
     finally:
         conn.close()
 
+import threading
+
+class LeaseRenewer:
+    def __init__(self, db_path: str, job_id: str, worker_id: str, lease_duration: int):
+        self.db_path = db_path
+        self.job_id = job_id
+        self.worker_id = worker_id
+        self.lease_duration = lease_duration
+        self.interval = max(1, lease_duration // 3)
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        self.thread.join(timeout=1.0)
+
+    def _run(self):
+        while not self.stop_event.wait(self.interval):
+            conn = get_connection(self.db_path)
+            try:
+                now = datetime.datetime.now(datetime.timezone.utc)
+                lease_expires = (now + datetime.timedelta(seconds=self.lease_duration)).isoformat()
+                conn.execute(
+                    """
+                    UPDATE jobs
+                    SET lease_expires_at = ?,
+                        updated_at = ?
+                    WHERE id = ? AND locked_by = ? AND state = 'processing';
+                    """,
+                    (lease_expires, now.isoformat(), self.job_id, self.worker_id)
+                )
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                conn.close()
+
 def worker_run(db_path: str, worker_id: str, stop_event: multiprocessing.Event) -> None:
     stop_requested = False
     
@@ -126,6 +166,12 @@ def worker_run(db_path: str, worker_id: str, stop_event: multiprocessing.Event) 
     conn = get_connection(db_path)
     
     while not stop_requested and not stop_event.is_set():
+        from queuectl.db import reap_expired_jobs
+        try:
+            reap_expired_jobs(conn)
+        except sqlite3.OperationalError:
+            pass
+            
         try:
             job = claim_next_job(conn, worker_id)
         except sqlite3.OperationalError:
@@ -139,6 +185,10 @@ def worker_run(db_path: str, worker_id: str, stop_event: multiprocessing.Event) 
                 time.sleep(0.1)
             continue
             
+        lease_duration = int(get_config(conn, "lease_duration", "15"))
+        renewer = LeaseRenewer(db_path, job.id, worker_id, lease_duration)
+        renewer.start()
+        
         old_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             result = subprocess.run(job.command, shell=True)
@@ -147,6 +197,7 @@ def worker_run(db_path: str, worker_id: str, stop_event: multiprocessing.Event) 
             exit_code = -1
         finally:
             signal.signal(signal.SIGINT, old_sigint)
+            renewer.stop()
             
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         

@@ -66,7 +66,7 @@ def claim_next_job(conn: sqlite3.Connection, worker_id: Optional[str] = None) ->
     now_str = now.isoformat()
     
     from queuectl.config import get_config
-    lease_duration = int(get_config(conn, "lease_duration", "300"))
+    lease_duration = int(get_config(conn, "lease_duration", "15"))
     lease_expires = (now + datetime.timedelta(seconds=lease_duration)).isoformat()
     
     query = """
@@ -97,3 +97,55 @@ def claim_next_job(conn: sqlite3.Connection, worker_id: Optional[str] = None) ->
         
     conn.commit()
     return Job.from_row(row)
+
+def reap_expired_jobs(conn: sqlite3.Connection) -> None:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    now_str = now.isoformat()
+    
+    rows = conn.execute(
+        "SELECT id, attempts, max_retries FROM jobs WHERE state = 'processing' AND datetime(lease_expires_at) <= datetime(?);",
+        (now_str,)
+    ).fetchall()
+    
+    if not rows:
+        return
+        
+    from queuectl.config import get_config
+    base = int(get_config(conn, "retry_backoff_base", "2"))
+    
+    for row in rows:
+        job_id = row["id"]
+        attempts = row["attempts"]
+        max_retries = row["max_retries"]
+        
+        if attempts < max_retries:
+            delay = base ** attempts
+            next_run = (now + datetime.timedelta(seconds=delay)).isoformat()
+            conn.execute(
+                """
+                UPDATE jobs
+                SET state = 'failed',
+                    updated_at = ?,
+                    next_attempt_at = ?,
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    lease_expires_at = NULL
+                WHERE id = ? AND state = 'processing';
+                """,
+                (now_str, next_run, job_id)
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET state = 'dead',
+                    updated_at = ?,
+                    next_attempt_at = NULL,
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    lease_expires_at = NULL
+                WHERE id = ? AND state = 'processing';
+                """,
+                (now_str, job_id)
+            )
+    conn.commit()
