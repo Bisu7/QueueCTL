@@ -15,6 +15,7 @@ class Job:
     locked_at: Optional[str] = None
     lease_expires_at: Optional[str] = None
     next_attempt_at: Optional[str] = None
+    priority: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Job":
@@ -30,6 +31,7 @@ class Job:
             locked_at=row["locked_at"],
             lease_expires_at=row["lease_expires_at"] if "lease_expires_at" in row.keys() else None,
             next_attempt_at=row["next_attempt_at"] if "next_attempt_at" in row.keys() else None,
+            priority=row["priority"] if "priority" in row.keys() else 0,
         )
 
     def to_dict(self) -> dict:

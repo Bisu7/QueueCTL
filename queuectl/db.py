@@ -36,7 +36,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             locked_by TEXT,
             locked_at TEXT,
             lease_expires_at TEXT,
-            next_attempt_at TEXT
+            next_attempt_at TEXT,
+            priority INTEGER NOT NULL DEFAULT 0
         );
     """)
     
@@ -47,6 +48,11 @@ def init_db(conn: sqlite3.Connection) -> None:
 
     try:
         conn.execute("ALTER TABLE jobs ADD COLUMN next_attempt_at TEXT;")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;")
     except sqlite3.OperationalError:
         pass
     
@@ -94,10 +100,10 @@ def claim_next_job(conn: sqlite3.Connection, worker_id: Optional[str] = None) ->
                    state = 'failed'
                    AND (next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime(?))
                )
-            ORDER BY created_at ASC
+            ORDER BY priority DESC, created_at ASC
             LIMIT 1
         ) AND state IN ('pending', 'failed')
-        RETURNING id, command, state, attempts, max_retries, created_at, updated_at, locked_by, locked_at, lease_expires_at, next_attempt_at;
+        RETURNING id, command, state, attempts, max_retries, created_at, updated_at, locked_by, locked_at, lease_expires_at, next_attempt_at, priority;
     """
     
     cur = conn.execute(query, (now_str, lease_expires, worker_id, now_str, now_str))

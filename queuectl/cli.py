@@ -68,19 +68,18 @@ def enqueue(job_json: str) -> None:
     try:
         default_max_retries = int(get_config(conn, "max-retries", "3"))
         
-        # Merge input with default values
         state = parsed.get("state", "pending")
         attempts = int(parsed.get("attempts", 0))
         max_retries = int(parsed.get("max_retries", default_max_retries))
-        
+        priority = int(parsed.get("priority", 0))
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         
         conn.execute(
             """
-            INSERT INTO jobs (id, command, state, attempts, max_retries, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO jobs (id, command, state, attempts, max_retries, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (job_id, command, state, attempts, max_retries, now, now)
+            (job_id, command, state, attempts, max_retries, priority, now, now)
         )
         conn.commit()
         click.echo(f"Job '{job_id}' enqueued successfully")
