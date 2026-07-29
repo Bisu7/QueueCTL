@@ -121,7 +121,7 @@ def reap_expired_jobs(conn: sqlite3.Connection) -> None:
         return
         
     from queuectl.config import get_config
-    base = int(get_config(conn, "retry_backoff_base", "2"))
+    base = int(get_config(conn, "backoff-base", "2"))
     
     for row in rows:
         job_id = row["id"]

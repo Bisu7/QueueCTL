@@ -66,7 +66,7 @@ def enqueue(job_json: str) -> None:
         
     conn = get_connection()
     try:
-        default_max_retries = int(get_config(conn, "max_retries", "3"))
+        default_max_retries = int(get_config(conn, "max-retries", "3"))
         
         # Merge input with default values
         state = parsed.get("state", "pending")
@@ -237,7 +237,7 @@ def worker_run(db_path: str, worker_id: str, stop_event: multiprocessing.Event) 
                 )
                 conn.commit()
             else:
-                base = int(get_config(conn, "retry_backoff_base", "2"))
+                base = int(get_config(conn, "backoff-base", "2"))
                 attempts = job.attempts
                 
                 if attempts < job.max_retries:
@@ -353,6 +353,107 @@ def stop_workers() -> None:
     finally:
         conn.close()
 
+@main.group()
+def dlq() -> None:
+    """Manage the Dead Letter Queue (DLQ)."""
+    pass
+
+@dlq.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Output results as raw JSON to stdout.")
+def dlq_list(as_json: bool) -> None:
+    """List all dead jobs in the DLQ."""
+    conn = get_connection(get_db_path())
+    try:
+        rows = conn.execute("SELECT * FROM jobs WHERE state = 'dead' ORDER BY created_at ASC;").fetchall()
+        jobs = [Job.from_row(row) for row in rows]
+        
+        if as_json:
+            click.echo(json.dumps([job.to_dict() for job in jobs]))
+        else:
+            if not jobs:
+                click.echo("No dead jobs found in DLQ")
+                return
+            for job in jobs:
+                click.echo(f"{job.id:<12} | attempts: {job.attempts}/{job.max_retries:<2} | {job.command}")
+    finally:
+        conn.close()
+
+@dlq.command("retry")
+@click.argument("job_id")
+def dlq_retry(job_id: str) -> None:
+    """Re-enqueue a dead job by its ID, resetting attempts to 0."""
+    conn = get_connection(get_db_path())
+    try:
+        row = conn.execute("SELECT id FROM jobs WHERE id = ? AND state = 'dead';", (job_id,)).fetchone()
+        if row is None:
+            click.echo(f"Error: Job '{job_id}' is not in the DLQ (dead state).", err=True)
+            sys.exit(1)
+            
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        conn.execute(
+            """
+            UPDATE jobs
+            SET state = 'pending',
+                attempts = 0,
+                updated_at = ?,
+                locked_by = NULL,
+                locked_at = NULL,
+                lease_expires_at = NULL,
+                next_attempt_at = NULL
+            WHERE id = ?;
+            """,
+            (now, job_id)
+        )
+        conn.commit()
+        click.echo(f"Job '{job_id}' successfully re-enqueued from DLQ.")
+    finally:
+        conn.close()
+
+@main.group()
+def config() -> None:
+    """Manage queue configuration options."""
+    pass
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key: str, value: str) -> None:
+    """Set a configuration option (max-retries or backoff-base)."""
+    if key not in ["max-retries", "backoff-base"]:
+        click.echo(f"Error: Invalid configuration key '{key}'. Must be 'max-retries' or 'backoff-base'.", err=True)
+        sys.exit(1)
+        
+    try:
+        int(value)
+    except ValueError:
+        click.echo(f"Error: Configuration value for '{key}' must be an integer.", err=True)
+        sys.exit(1)
+        
+    conn = get_connection(get_db_path())
+    try:
+        from queuectl.config import set_config
+        set_config(conn, key, value)
+        click.echo(f"Configuration '{key}' set to '{value}'")
+    finally:
+        conn.close()
+
+@config.command("get")
+@click.argument("key")
+def config_get(key: str) -> None:
+    """Get the value of a configuration option."""
+    if key not in ["max-retries", "backoff-base"]:
+        click.echo(f"Error: Unknown configuration key '{key}'", err=True)
+        sys.exit(1)
+        
+    conn = get_connection(get_db_path())
+    try:
+        from queuectl.config import get_config
+        val = get_config(conn, key)
+        if val is None:
+            val = "3" if key == "max-retries" else "2"
+        click.echo(val)
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     main()
-
