@@ -245,6 +245,7 @@ def worker_run(db_path: str, worker_id: str, stop_event: multiprocessing.Event) 
                     time.sleep(0.1)
                 continue
                 
+            click.echo(f"[{worker_id}] Claimed job '{job.id}': {job.command}")
             lease_duration = int(get_config(conn, "lease_duration", "15"))
             renewer = LeaseRenewer(db_path, job.id, worker_id, lease_duration)
             renewer.start()
@@ -273,6 +274,7 @@ def worker_run(db_path: str, worker_id: str, stop_event: multiprocessing.Event) 
                 signal.signal(signal.SIGINT, old_sigint)
                 renewer.stop()
                 
+            click.echo(f"[{worker_id}] Job '{job.id}' finished with exit code {exit_code}")
             now = datetime.datetime.now(datetime.timezone.utc).isoformat()
             
             if exit_code == 0:
