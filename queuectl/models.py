@@ -16,6 +16,9 @@ class Job:
     lease_expires_at: Optional[str] = None
     next_attempt_at: Optional[str] = None
     priority: int = 0
+    run_at: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+    output: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Job":
@@ -32,6 +35,9 @@ class Job:
             lease_expires_at=row["lease_expires_at"] if "lease_expires_at" in row.keys() else None,
             next_attempt_at=row["next_attempt_at"] if "next_attempt_at" in row.keys() else None,
             priority=row["priority"] if "priority" in row.keys() else 0,
+            run_at=row["run_at"] if "run_at" in row.keys() else None,
+            timeout_seconds=row["timeout_seconds"] if "timeout_seconds" in row.keys() else None,
+            output=row["output"] if "output" in row.keys() else None,
         )
 
     def to_dict(self) -> dict:

@@ -37,7 +37,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             locked_at TEXT,
             lease_expires_at TEXT,
             next_attempt_at TEXT,
-            priority INTEGER NOT NULL DEFAULT 0
+            priority INTEGER NOT NULL DEFAULT 0,
+            run_at TEXT,
+            timeout_seconds INTEGER,
+            output TEXT
         );
     """)
     
@@ -53,6 +56,21 @@ def init_db(conn: sqlite3.Connection) -> None:
 
     try:
         conn.execute("ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN run_at TEXT;")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN timeout_seconds INTEGER;")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN output TEXT;")
     except sqlite3.OperationalError:
         pass
     
@@ -95,7 +113,7 @@ def claim_next_job(conn: sqlite3.Connection, worker_id: Optional[str] = None) ->
             locked_at = ?
         WHERE id = (
             SELECT id FROM jobs
-            WHERE state = 'pending'
+            WHERE (state = 'pending' AND (run_at IS NULL OR datetime(run_at) <= datetime(?)))
                OR (
                    state = 'failed'
                    AND (next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime(?))
@@ -103,12 +121,13 @@ def claim_next_job(conn: sqlite3.Connection, worker_id: Optional[str] = None) ->
             ORDER BY priority DESC, created_at ASC
             LIMIT 1
         ) AND state IN ('pending', 'failed')
-        RETURNING id, command, state, attempts, max_retries, created_at, updated_at, locked_by, locked_at, lease_expires_at, next_attempt_at, priority;
+        RETURNING id, command, state, attempts, max_retries, created_at, updated_at, locked_by, locked_at, lease_expires_at, next_attempt_at, priority, run_at, timeout_seconds, output;
     """
     
-    cur = conn.execute(query, (now_str, lease_expires, worker_id, now_str, now_str))
+    cur = conn.execute(query, (now_str, lease_expires, worker_id, now_str, now_str, now_str))
     row = cur.fetchone()
     if row is None:
+        conn.rollback()
         return None
         
     conn.commit()
