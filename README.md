@@ -149,4 +149,4 @@ python tests/test_all_bonus.py
 ---
 
 ## Demo Recording
-*   [Demo video link placeholder]
+*   [\[Demo video link placeholder\]](https://www.loom.com/share/f9d101b787ec44acbf1641117d055b8c)
