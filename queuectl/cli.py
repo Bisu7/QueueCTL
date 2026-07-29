@@ -44,15 +44,52 @@ def status() -> None:
         conn.close()
 
 @main.command()
-@click.argument("job_json")
-def enqueue(job_json: str) -> None:
+@click.argument("job_json", nargs=-1, required=True)
+def enqueue(job_json: tuple) -> None:
     """Enqueue a job using a JSON payload."""
+    job_json_str = " ".join(job_json)
     try:
-        parsed = json.loads(job_json)
-    except json.JSONDecodeError as e:
-        click.echo(f"Error: Invalid JSON payload: {e}", err=True)
-        sys.exit(1)
+        parsed = json.loads(job_json_str)
+    except json.JSONDecodeError:
+        # Fallback lenient parser for shells (like PowerShell) that strip double quotes
+        import re
+        s = job_json_str.strip()
+        if s.startswith('{'):
+            s = s[1:]
+        if s.endswith('}'):
+            s = s[:-1]
+            
+        keys = ["id", "command", "state", "attempts", "max_retries", "priority", "run_at", "timeout_seconds"]
+        occurrences = []
+        for key in keys:
+            pattern = rf'(?:["\'\s]|^)({key})(?:["\']|\b)\s*:\s*'
+            for m in re.finditer(pattern, s):
+                occurrences.append({
+                    "key": key,
+                    "start": m.start(),
+                    "val_start": m.end()
+                })
+                
+        occurrences.sort(key=lambda x: x["start"])
         
+        parsed = {}
+        for i, occ in enumerate(occurrences):
+            key = occ["key"]
+            val_start = occ["val_start"]
+            val_end = occurrences[i+1]["start"] if i + 1 < len(occurrences) else len(s)
+            
+            val = s[val_start:val_end].strip()
+            if val.endswith(','):
+                val = val[:-1].strip()
+            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                val = val[1:-1].strip()
+                
+            parsed[key] = val
+            
+        if not parsed or "id" not in parsed or "command" not in parsed:
+            click.echo(f"Error: Invalid JSON payload and fallback parser failed to parse it: {job_json_str}", err=True)
+            sys.exit(1)
+            
     if not isinstance(parsed, dict):
         click.echo("Error: JSON payload must be an object", err=True)
         sys.exit(1)
@@ -541,186 +578,96 @@ def metrics(minutes: int) -> None:
     finally:
         conn.close()
 
-def render_dashboard_html(counts, recent_jobs):
-    rows_html = ""
+def _load_template() -> str:
+    template_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+    with open(template_path, encoding="utf-8") as f:
+        return f.read()
+
+def render_dashboard_html(counts, recent_jobs, active_workers: int) -> str:
     if not recent_jobs:
-        rows_html = '<tr><td colspan="6" style="text-align: center; color: var(--text-secondary);">No recent jobs in the queue</td></tr>'
+        rows = '<tr><td colspan="6" class="empty">No jobs found</td></tr>'
     else:
+        rows = ""
         for job in recent_jobs:
-            badge_class = f"badge badge-{job.state}"
-            rows_html += f"""
-            <tr>
-                <td class="code-font">{job.id}</td>
-                <td class="code-font">{job.command}</td>
-                <td><span class="{badge_class}">{job.state}</span></td>
-                <td>{job.priority}</td>
-                <td>{job.attempts}/{job.max_retries}</td>
-                <td style="color: var(--text-secondary);">{job.updated_at}</td>
-            </tr>
-            """
-            
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>QueueCTL Dashboard</title>
-        <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
-        <style>
-            :root {{
-                --bg-color: #0d0e15;
-                --card-bg: rgba(22, 24, 38, 0.6);
-                --border-color: rgba(255, 255, 255, 0.08);
-                --text-primary: #f3f4f6;
-                --text-secondary: #9ca3af;
-                --primary-glow: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
-                --state-pending: #fbbf24;
-                --state-processing: #3b82f6;
-                --state-completed: #10b981;
-                --state-failed: #f43f5e;
-                --state-dead: #6b7280;
-            }}
-            * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-            body {{
-                font-family: 'Outfit', sans-serif;
-                background-color: var(--bg-color);
-                color: var(--text-primary);
-                min-height: 100vh;
-                padding: 2.5rem;
-                background-image: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.1) 0%, transparent 40%),
-                                  radial-gradient(circle at 90% 80%, rgba(168, 85, 247, 0.1) 0%, transparent 40%);
-            }}
-            header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 2.5rem; }}
-            h1 {{ font-weight: 700; font-size: 2.2rem; background: var(--primary-glow); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
-            .refresh-btn {{
-                background: var(--primary-glow); color: white; border: none; padding: 0.75rem 1.5rem;
-                font-size: 0.95rem; font-weight: 600; border-radius: 12px; cursor: pointer;
-                transition: transform 0.2s, box-shadow 0.2s; box-shadow: 0 4px 15px rgba(99, 102, 241, 0.2);
-                text-decoration: none; display: inline-block;
-            }}
-            .refresh-btn:hover {{ transform: translateY(-2px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.35); }}
-            .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1.5rem; margin-bottom: 3rem; }}
-            .stat-card {{
-                background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 16px;
-                padding: 1.5rem; text-align: center; backdrop-filter: blur(10px); transition: border-color 0.3s, transform 0.3s;
-            }}
-            .stat-card:hover {{ border-color: rgba(99, 102, 241, 0.3); transform: translateY(-4px); }}
-            .stat-label {{ font-size: 0.9rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }}
-            .stat-value {{ font-size: 2.2rem; font-weight: 700; }}
-            .pending {{ color: var(--state-pending); }}
-            .processing {{ color: var(--state-processing); }}
-            .completed {{ color: var(--state-completed); }}
-            .failed {{ color: var(--state-failed); }}
-            .dead {{ color: var(--state-dead); }}
-            .table-container {{ background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 18px; padding: 1.5rem; backdrop-filter: blur(10px); }}
-            h2 {{ font-size: 1.4rem; font-weight: 600; margin-bottom: 1.5rem; }}
-            table {{ width: 100%; border-collapse: collapse; text-align: left; }}
-            th, td {{ padding: 1rem 1.25rem; border-bottom: 1px solid var(--border-color); }}
-            th {{ font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); font-weight: 600; }}
-            td {{ font-size: 0.95rem; }}
-            tr:last-child td {{ border-bottom: none; }}
-            .badge {{ display: inline-block; padding: 0.25rem 0.75rem; border-radius: 8px; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; }}
-            .badge-pending {{ background: rgba(251, 191, 36, 0.15); color: var(--state-pending); }}
-            .badge-processing {{ background: rgba(59, 130, 246, 0.15); color: var(--state-processing); }}
-            .badge-completed {{ background: rgba(16, 185, 129, 0.15); color: var(--state-completed); }}
-            .badge-failed {{ background: rgba(244, 63, 94, 0.15); color: var(--state-failed); }}
-            .badge-dead {{ background: rgba(107, 114, 128, 0.15); color: var(--state-dead); }}
-            .code-font {{ font-family: monospace; background: rgba(255, 255, 255, 0.05); padding: 0.2rem 0.4rem; border-radius: 4px; }}
-        </style>
-    </head>
-    <body>
-        <header>
-            <div>
-                <h1>QueueCTL Dashboard</h1>
-                <p style="color: var(--text-secondary); font-size: 0.95rem; margin-top: 0.25rem;">Background Job Queue Monitoring Dashboard</p>
-            </div>
-            <a href="/" class="refresh-btn">Refresh Dashboard</a>
-        </header>
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label pending">Pending</div>
-                <div class="stat-value pending">{counts.get("pending", 0)}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label processing">Processing</div>
-                <div class="stat-value processing">{counts.get("processing", 0)}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label completed">Completed</div>
-                <div class="stat-value completed">{counts.get("completed", 0)}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label failed">Failed</div>
-                <div class="stat-value failed">{counts.get("failed", 0)}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label dead">Dead</div>
-                <div class="stat-value dead">{counts.get("dead", 0)}</div>
-            </div>
-        </div>
-        <div class="table-container">
-            <h2>Recent Jobs (Last 20)</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Job ID</th>
-                        <th>Command</th>
-                        <th>State</th>
-                        <th>Priority</th>
-                        <th>Attempts</th>
-                        <th>Last Updated</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {rows_html}
-                </tbody>
-            </table>
-        </div>
-    </body>
-    </html>
-    """
-    return html
+            state = job.state.strip()
+            rows += (
+                f'<tr>'
+                f'<td>{job.id}</td>'
+                f'<td>{job.command}</td>'
+                f'<td><span class="state {state}">{state}</span></td>'
+                f'<td>{job.attempts}/{job.max_retries}</td>'
+                f'<td>{job.priority}</td>'
+                f'<td>{job.updated_at}</td>'
+                f'</tr>\n'
+            )
+
+
+    import datetime as _dt
+    now_str = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    return (
+        _load_template()
+        .replace("{{pending}}",    str(counts.get("pending",    0)))
+        .replace("{{processing}}", str(counts.get("processing", 0)))
+        .replace("{{completed}}",  str(counts.get("completed",  0)))
+        .replace("{{failed}}",     str(counts.get("failed",     0)))
+        .replace("{{dead}}",       str(counts.get("dead",       0)))
+        .replace("{{rows}}",       rows)
+        .replace("{{workers}}",    str(active_workers))
+        .replace("{{now}}",        now_str)
+    )
 
 @main.command("dashboard")
 @click.option("--port", type=int, default=8000, help="Port to run the web dashboard on.")
 def dashboard(port: int) -> None:
-    """Start a lightweight read-only web dashboard server."""
+    """Start a read-only web dashboard (open http://localhost:<port>/)."""
     import http.server
     import socketserver
-    
+
     class DashboardHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/":
-                self.send_response(200)
-                self.send_header("Content-type", "text/html")
-                self.end_headers()
-                
-                db_path = get_db_path()
-                conn = get_connection(db_path)
-                try:
-                    rows = conn.execute("SELECT state, COUNT(*) as cnt FROM jobs GROUP BY state;").fetchall()
-                    counts = {r["state"]: r["cnt"] for r in rows}
-                    
-                    recent_rows = conn.execute("SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 20;").fetchall()
-                    recent_jobs = [Job.from_row(r) for r in recent_rows]
-                finally:
-                    conn.close()
-                    
-                html = render_dashboard_html(counts, recent_jobs)
-                self.wfile.write(html.encode("utf-8"))
-            else:
+            if self.path != "/":
                 self.send_error(404, "Not Found")
-                
+                return
+
+            db_path = get_db_path()
+            conn = get_connection(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT state, COUNT(*) as cnt FROM jobs GROUP BY state;"
+                ).fetchall()
+                counts = {r["state"]: r["cnt"] for r in rows}
+
+                recent_rows = conn.execute(
+                    "SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 20;"
+                ).fetchall()
+                recent_jobs = [Job.from_row(r) for r in recent_rows]
+
+                from queuectl.db import count_active_workers
+                active_workers = count_active_workers(conn)
+            finally:
+                conn.close()
+
+            html = render_dashboard_html(counts, recent_jobs, active_workers)
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def log_message(self, format, *args):
             pass
 
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", port), DashboardHandler) as httpd:
-        click.echo(f"Web Dashboard running on http://localhost:{port}/")
+        click.echo(f"Dashboard running at http://localhost:{port}/  (Ctrl+C to stop)")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            click.echo("\nStopping Dashboard server.")
+            click.echo("\nStopping dashboard.")
 
 if __name__ == "__main__":
     main()
+
+

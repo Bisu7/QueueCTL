@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QueueCTL — Job Queue Monitor</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: "Courier New", Courier, monospace;
+            background: #f5f5f0;
+            color: #1a1a1a;
+            padding: 24px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        header {
+            border-bottom: 2px solid #1a1a1a;
+            padding-bottom: 12px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+
+        h1 {
+            font-size: 20px;
+            font-weight: bold;
+            letter-spacing: 0.02em;
+        }
+
+        header span {
+            font-size: 12px;
+            color: #666;
+        }
+
+        a.refresh {
+            font-family: inherit;
+            font-size: 12px;
+            color: #1a1a1a;
+            text-decoration: none;
+            border: 1px solid #1a1a1a;
+            padding: 4px 10px;
+        }
+
+        a.refresh:hover {
+            background: #1a1a1a;
+            color: #f5f5f0;
+        }
+
+        .summary {
+            display: flex;
+            gap: 0;
+            border: 1px solid #1a1a1a;
+            margin-bottom: 28px;
+        }
+
+        .summary-item {
+            flex: 1;
+            padding: 14px 16px;
+            border-right: 1px solid #1a1a1a;
+            text-align: center;
+        }
+
+        .summary-item:last-child {
+            border-right: none;
+        }
+
+        .summary-item .label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #555;
+            margin-bottom: 6px;
+        }
+
+        .summary-item .count {
+            font-size: 28px;
+            font-weight: bold;
+        }
+
+        .count.pending    { color: #b45309; }
+        .count.processing { color: #1d4ed8; }
+        .count.completed  { color: #166534; }
+        .count.failed     { color: #9f1239; }
+        .count.dead       { color: #444; }
+
+        h2 {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 10px;
+            color: #444;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            border: 1px solid #ccc;
+        }
+
+        thead {
+            background: #e8e8e3;
+        }
+
+        th {
+            text-align: left;
+            padding: 8px 12px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            border-bottom: 1px solid #ccc;
+            border-right: 1px solid #ccc;
+            font-weight: bold;
+        }
+
+        th:last-child { border-right: none; }
+
+        td {
+            padding: 7px 12px;
+            border-bottom: 1px solid #ddd;
+            border-right: 1px solid #ddd;
+            vertical-align: middle;
+        }
+
+        td:last-child { border-right: none; }
+
+        tr:last-child td { border-bottom: none; }
+
+        tr:hover td { background: #eeeeea; }
+
+        .state {
+            display: inline-block;
+            padding: 2px 7px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            border: 1px solid currentColor;
+        }
+
+        .state.pending    { color: #b45309; }
+        .state.processing { color: #1d4ed8; }
+        .state.completed  { color: #166534; }
+        .state.failed     { color: #9f1239; }
+        .state.dead       { color: #555; }
+
+        .empty {
+            text-align: center;
+            padding: 24px;
+            color: #888;
+            font-style: italic;
+        }
+
+        footer {
+            margin-top: 32px;
+            border-top: 1px solid #ccc;
+            padding-top: 10px;
+            font-size: 11px;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div>
+            <h1>QueueCTL — Job Queue Monitor</h1>
+        </div>
+        <a href="/" class="refresh">[ Refresh ]</a>
+    </header>
+
+    <div class="summary">
+        <div class="summary-item">
+            <div class="label">Pending</div>
+            <div class="count pending">{{pending}}</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Processing</div>
+            <div class="count processing">{{processing}}</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Completed</div>
+            <div class="count completed">{{completed}}</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Failed</div>
+            <div class="count failed">{{failed}}</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Dead (DLQ)</div>
+            <div class="count dead">{{dead}}</div>
+        </div>
+    </div>
+
+    <h2>Recent Jobs (Last 20, newest first)</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Command</th>
+                <th>State</th>
+                <th>Attempts</th>
+                <th>Priority</th>
+                <th>Updated At</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{rows}}
+        </tbody>
+    </table>
+
+    <footer>
+        Workers active: {{workers}} &nbsp;|&nbsp; Page loaded at {{now}}
+    </footer>
+</body>
+</html>
